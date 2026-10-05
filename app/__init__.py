@@ -1,0 +1,2 @@
+"""Vocal remover web application."""
+

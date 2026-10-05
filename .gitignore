@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/uploads/
+data/results/
+data/models/
+
+
+# Konfigurasi lokal (jangan commit nilai asli)
+.env
+frontend/node_modules/
+frontend/dist/
+.runtime/

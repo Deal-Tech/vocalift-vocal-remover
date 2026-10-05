@@ -1,0 +1,10 @@
+audio-separator[cpu]==0.47.0
+audioread==3.1.0
+demucs==4.1.0
+fastapi==0.117.1
+librosa==1.0.0
+numpy==2.3.3
+python-multipart==0.0.20
+uvicorn[standard]==0.36.0
+yt-dlp==2026.8.19
+
