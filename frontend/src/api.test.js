@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { detectPlatform, parseMediaLink, pollingRetryDelay, pollingRetryLimit, request } from './api.js';
+import { backendDownMessage, describeError, detectPlatform, jobIdFromHash, parseMediaLink, pollingRetryDelay, pollingRetryLimit, request } from './api.js';
 
 test('single YouTube videos are recognised in every common link shape', () => {
   for (const pasted of [
@@ -81,6 +81,34 @@ test('network interruptions remain retryable without hiding the original error',
     assert.ok(pollingRetryDelay(error, 1) > 0);
     return true;
   });
+});
+
+test('an unreachable backend is explained instead of showing raw fetch errors', async t => {
+  assert.equal(describeError(new TypeError('Failed to fetch')), backendDownMessage);
+  // Vite proxy, backend stopped
+  t.mock.method(globalThis, 'fetch', async () => new Response('', { status: 500 }));
+  await assert.rejects(request('/api/jobs'), error => {
+    assert.equal(describeError(error), backendDownMessage);
+    return true;
+  });
+});
+
+test('backend explanations are shown as they are', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(
+    JSON.stringify({ detail: 'Format tidak didukung.' }),
+    { status: 415 },
+  ));
+  await assert.rejects(request('/api/jobs'), error => {
+    assert.equal(describeError(error), 'Format tidak didukung.');
+    return true;
+  });
+});
+
+test('only a well-formed job id in the address is resumed', () => {
+  assert.equal(jobIdFromHash('#job=418bf05da8c74f35a5a14939faaa4711'), '418bf05da8c74f35a5a14939faaa4711');
+  for (const hash of ['', '#how-it-works', '#job=../../etc', '#job=418BF05DA8C74F35A5A14939FAAA4711', '#job=418bf05d', undefined]) {
+    assert.equal(jobIdFromHash(hash), null, String(hash));
+  }
 });
 
 test('polling retries timeouts, throttling, and server failures only', () => {

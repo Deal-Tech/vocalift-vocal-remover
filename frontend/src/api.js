@@ -49,6 +49,11 @@ export function detectPlatform(value) {
   return parseMediaLink(value)?.platform ?? null;
 }
 
+// Resume job after refresh
+export function jobIdFromHash(hash) {
+  return /^#job=([0-9a-f]{32})$/.exec(hash ?? '')?.[1] ?? null;
+}
+
 export function formatBytes(bytes) {
   if (bytes == null) return '';
   return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -64,6 +69,14 @@ export function pollingRetryDelay(error, attempt) {
   return transient ? Math.min(1200 * 2 ** (attempt - 1), 10000) : null;
 }
 
+export const backendDownMessage = 'Tidak bisa menghubungi server backend. Pastikan .\\server.ps1 masih berjalan, lalu coba lagi.';
+
+// Network or proxy failure
+export function describeError(error) {
+  if (error instanceof TypeError || error?.backendDown) return backendDownMessage;
+  return error?.message || 'Terjadi kesalahan yang tidak diketahui.';
+}
+
 export async function request(url, options = {}) {
   const response = await fetch(url, { cache: 'no-store', ...options });
   const body = await response.json().catch(() => null);
@@ -71,6 +84,7 @@ export async function request(url, options = {}) {
     const detail = body?.detail || body?.message;
     const error = new Error(typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(item => item.msg).join('; ') : `Server merespons ${response.status}.`);
     error.status = response.status;
+    error.backendDown = body == null && response.status >= 500;
     throw error;
   }
   if (!body) throw new Error('Respons server tidak valid.');

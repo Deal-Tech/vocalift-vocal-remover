@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { audioExtensions, formatBytes, parseMediaLink, pollingRetryDelay, pollingRetryLimit, request } from './api.js';
+import { audioExtensions, describeError, formatBytes, jobIdFromHash, parseMediaLink, pollingRetryDelay, pollingRetryLimit, request } from './api.js';
 import Waveform from './Waveform.jsx';
+
+const backendWaitingMessage = 'Menunggu server backend… Jalankan .\\server.ps1 jika belum berjalan.';
+
+function jobFromAddress() {
+  const id = jobIdFromHash(window.location.hash);
+  return id ? { id, progress: 0, message: 'Memuat status pemrosesan…' } : null;
+}
 
 function RemoverIcon() {
   return <svg viewBox="0 0 40 30" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M2 8h36M2 22h36M7 4v8M13 2v12M19 5v6M25 3v10M31 6v4M7 19v6M13 17v10M19 20v4M25 18v8M31 19v6" /></svg>;
@@ -29,8 +36,8 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [url, setUrl] = useState('');
   const [quality, setQuality] = useState('balanced');
-  const [view, setView] = useState('upload');
-  const [job, setJob] = useState(null);
+  const [view, setView] = useState(() => jobFromAddress() ? 'processing' : 'upload');
+  const [job, setJob] = useState(jobFromAddress);
   const [error, setError] = useState('');
   const [pollingMessage, setPollingMessage] = useState('');
   const [health, setHealth] = useState(null);
@@ -49,14 +56,38 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    request('/api/health', { signal: controller.signal }).then(value => {
-      setHealth(value); setConnection(value.ffmpeg ? 'ready' : 'error');
-      if (!value.ffmpeg) setError('FFmpeg belum tersedia. Jalankan .\\server.ps1 -Setup, lalu restart server.');
-    }).catch(err => { if (err.name !== 'AbortError') { setConnection('error'); setError('Backend belum terhubung. Jalankan .\\server.ps1 untuk menghidupkan kedua server.'); } });
-    return () => controller.abort();
+    let timer;
+    // Retry until backend is up
+    async function check() {
+      try {
+        const value = await request('/api/health', { signal: controller.signal });
+        setHealth(value); setConnection(value.ffmpeg ? 'ready' : 'error');
+        if (!value.ffmpeg) setError('FFmpeg belum tersedia. Jalankan .\\server.ps1 -Setup, lalu restart server.');
+        else setError(current => current === backendWaitingMessage ? '' : current);
+      } catch (err) {
+        if (controller.signal.aborted || err.name === 'AbortError') return;
+        setConnection('error'); setError(backendWaitingMessage);
+        timer = setTimeout(check, 2000);
+      }
+    }
+    check();
+    return () => { clearTimeout(timer); controller.abort(); };
   }, []);
 
   useEffect(() => () => activeRequest.current?.abort(), []);
+
+  useEffect(() => {
+    const hash = job?.id ? `#job=${job.id}` : '';
+    if (window.location.hash !== hash) window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${hash}`);
+  }, [job?.id]);
+
+  useEffect(() => {
+    // Stray drops would leave page
+    const ignore = event => event.preventDefault();
+    window.addEventListener('dragover', ignore);
+    window.addEventListener('drop', ignore);
+    return () => { window.removeEventListener('dragover', ignore); window.removeEventListener('drop', ignore); };
+  }, []);
 
   useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' }); }, [view]);
 
@@ -81,7 +112,7 @@ export default function App() {
         if (delay !== null) {
           setPollingMessage(`Koneksi ke server terganggu. Mencoba lagi (${failures}/${pollingRetryLimit})…`);
           timer = setTimeout(poll, delay);
-        } else { setError(err.message); setView('error'); }
+        } else { setError(describeError(err)); setView('error'); }
       }
     }
     poll();
@@ -116,7 +147,7 @@ export default function App() {
         result = await request('/api/jobs', { method: 'POST', body: form, signal: controller.signal });
       } else result = await request('/api/media', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: link.url, quality_mode: quality }), signal: controller.signal });
       if (!controller.signal.aborted) setJob(result);
-    } catch (err) { if (err.name !== 'AbortError') { setError(err.message); setView('error'); } }
+    } catch (err) { if (err.name !== 'AbortError') { setError(describeError(err)); setView('error'); } }
     finally { submitting.current = false; }
   }
 
@@ -161,7 +192,7 @@ export default function App() {
           <button className="process-button" type="submit" disabled={!ready}>{connection === 'checking' ? 'Menghubungkan…' : 'Pisahkan audio'}</button>
           <p className="privacy-note">Audio diproses di komputer kamu.</p>
         </form>}
-        {view === 'processing' && <div className="processing" role="status" aria-live="polite"><div className="wave-loader">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div><h2>Memisahkan audio…</h2><p>{pollingMessage || job?.message}</p><div className="progress-track" role="progressbar" aria-label="Progres pemisahan" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.max(0, job?.progress ?? 0))}><span style={{ width: `${Math.min(100, Math.max(0, job?.progress ?? 0))}%` }} /></div><div className="progress-meta"><span>{job?.filename}</span><b>{job?.progress ?? 0}%</b></div><p className="input-hint">{quality === 'ultra' ? 'Mode Ultra membutuhkan waktu lebih lama pada CPU.' : 'Lama pemrosesan tergantung durasi audio dan komputer kamu.'}</p></div>}
+        {view === 'processing' && <div className="processing" role="status" aria-live="polite"><div className="wave-loader">{Array.from({ length: 9 }, (_, i) => <i key={i} />)}</div><h2>Memisahkan audio…</h2><p>{pollingMessage || job?.message}</p><div className="progress-track" role="progressbar" aria-label="Progres pemisahan" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.max(0, job?.progress ?? 0))}><span style={{ width: `${Math.min(100, Math.max(0, job?.progress ?? 0))}%` }} /></div><div className="progress-meta"><span>{job?.filename}</span><b>{job?.progress ?? 0}%</b></div><p className="input-hint">{(job?.quality_mode ?? quality) === 'ultra' ? 'Mode Ultra membutuhkan waktu lebih lama pada CPU.' : 'Lama pemrosesan tergantung durasi audio dan komputer kamu.'}</p></div>}
         {view === 'error' && <div className="error-panel" role="alert"><h2>Audio belum berhasil dipisahkan</h2><p>{error}</p><button className="browse-button" onClick={() => { setView('upload'); setJob(null); setError(''); }}>Coba lagi</button></div>}
         {view === 'result' && job && <div className="results"><div className="result-header"><div><h2>Track kamu sudah siap</h2><p>{job.filename}</p></div><button className="browse-button" onClick={reset}>Lagu baru</button></div>{job.warnings?.map((warning, index) => <p className="input-hint" role="status" key={index}><strong>Catatan:</strong> {warning}</p>)}<StemPlayer stem="instrumental" job={job} /><StemPlayer stem="vocals" job={job} />{job.analysis && <div className="analysis"><span>BPM <strong>{job.analysis.bpm || '—'}</strong></span><span>Key <strong>{job.analysis.key || '—'}{job.analysis.key_chord && job.analysis.key_chord !== '—' ? ` / ${job.analysis.key_chord}` : ''}</strong><small>{job.analysis.key_confidence ? `${job.analysis.key_confidence}% confidence` : ''}</small></span><span>Chord <strong>{job.analysis.chords?.join(' · ') || '—'}</strong></span></div>}<p className="input-hint">{job.separation_label} · {resultFormats}{job.analysis ? ' · Key dan chord adalah estimasi.' : ''}</p></div>}
       </section>

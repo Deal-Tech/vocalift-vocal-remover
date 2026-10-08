@@ -111,6 +111,16 @@ bukan sembarang aplikasi yang memakai port. Tutup server lama yang dijalankan
 secara manual sebelum start jika portnya sama. Satu worker backend digunakan
 karena status dan antrean job tersimpan dalam memori.
 
+Job yang sudah selesai juga dicatat ke `data/results/<id>/job.json`, jadi tombol
+unduhan tetap jalan setelah backend di-restart (termasuk reload otomatis `-Dev`)
+selama hasilnya belum melewati `RESULT_TTL_HOURS`. Job yang masih diproses saat
+backend restart memang terputus; halaman akan mengatakan itu, bukan "job tidak
+ditemukan". ID job disimpan di alamat halaman (`#job=…`), sehingga refresh
+browser melanjutkan pemrosesan atau membuka hasil yang sama.
+
+Membuka `http://127.0.0.1:8000` langsung akan diarahkan ke UI React di port
+frontend.
+
 Acuan HTML dan warna UI dari vocalremover.org ada di `frontend/reference/`.
 UI memakai satu tool Remover, waveform hijau/ungu, dan latar gelap dari acuan.
 
@@ -166,6 +176,7 @@ Atur environment variable sebelum menjalankan server, atau lewat `.env` di root.
 - `DEMUCS_MODEL` — nama/checkpoint model Demucs, default `04573f0d` (HTDemucs fine-tuned vocal specialist).
 - `MAX_YOUTUBE_MINUTES` — batas durasi video YouTube, default `30` menit.
 - `MAX_TIKTOK_MINUTES` — batas durasi video TikTok, default `15` menit.
+- `VOCALIFT_FRONTEND_URL` — tujuan redirect saat port backend dibuka langsung, default `http://127.0.0.1:5173`. `server.ps1` mengisinya otomatis dari `-FrontendPort`.
 
 Penyetelan pembersihan instrumental (ubah hanya bila perlu):
 
@@ -188,8 +199,8 @@ npm --prefix frontend run build
 ```
 
 Pengujian backend memeriksa cleanup reverb, ekspor WAV/MP3 saat refinement gagal
-atau file sementara terkunci, fallback WAV saat encoding MP3 gagal, dan pesan
-error FFmpeg. Model AI tidak dijalankan dalam suite ini. Pengujian
+atau file sementara terkunci, fallback WAV saat encoding MP3 gagal, unduhan yang
+tetap jalan setelah backend restart, dan pesan error FFmpeg. Model AI tidak dijalankan dalam suite ini. Pengujian
 frontend memeriksa retry saat koneksi atau server terganggu; progres tetap
 ditampilkan selama maksimal lima percobaan ulang. Error job yang sebenarnya
 tetap ditampilkan sebagai kegagalan.
