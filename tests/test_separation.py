@@ -22,8 +22,10 @@ class SeparationRegressionTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="vocalift-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.job_id = uuid.uuid4().hex
         self.source = self.root / "input.wav"
-        self.results = self.root / "results"
+        # Mirror RESULT_DIR/<job id> layout
+        self.results = self.root / self.job_id
         model_dir = self.results / main.MODEL_NAME.replace("hf://", "").replace("/", "_")
         model_dir.mkdir(parents=True)
         sample_rate = 44100
@@ -39,7 +41,6 @@ class SeparationRegressionTests(unittest.TestCase):
             (self.raw_instrumental, music),
         ):
             sf.write(path, np.column_stack((audio, audio)), sample_rate, subtype="FLOAT")
-        self.job_id = uuid.uuid4().hex
         main.jobs[self.job_id] = {
             "id": self.job_id,
             "filename": "input.wav",
@@ -91,6 +92,31 @@ class SeparationRegressionTests(unittest.TestCase):
                 self.assertTrue(Path(response.path).is_file())
                 self.assertGreater(public_job["downloads"][stem][audio_format]["bytes"], 100)
                 self.assertEqual(response.media_type, "audio/wav" if audio_format == "wav" else "audio/mpeg")
+
+    @unittest.skipUnless(main.FFMPEG_AVAILABLE, "FFmpeg is required for audio export")
+    def test_finished_results_stay_downloadable_after_a_restart(self):
+        with self.assertLogs(main.logger, level="WARNING"):
+            self.run_with_demucs_output()
+        # Simulate backend restart
+        main.jobs.pop(self.job_id)
+        with patch.object(main, "RESULT_DIR", self.root):
+            public_job = main.get_job(self.job_id)
+            self.assertEqual(public_job["status"], "completed")
+            for stem in ("vocals", "instrumental"):
+                self.assertEqual(set(public_job["downloads"][stem]), {"wav", "mp3"})
+                for audio_format in ("wav", "mp3"):
+                    response = main.get_result(self.job_id, stem, audio_format)
+                    self.assertGreater(Path(response.path).stat().st_size, 100)
+
+    def test_job_cut_off_by_a_restart_says_so(self):
+        main.jobs.pop(self.job_id)
+        with (
+            patch.object(main, "RESULT_DIR", self.root),
+            self.assertRaises(main.HTTPException) as caught,
+        ):
+            main.get_job(self.job_id)
+        self.assertEqual(caught.exception.status_code, 404)
+        self.assertIn("dimulai ulang", caught.exception.detail)
 
     def test_ffmpeg_processing_error_keeps_its_actual_message(self):
         error = "FFmpeg: Invalid audio data found when processing input."

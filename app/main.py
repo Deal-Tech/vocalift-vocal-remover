@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 
@@ -106,6 +106,11 @@ YOUTUBE_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 YOUTUBE_ID_PATHS = {"shorts", "live", "embed", "v"}
 # yt-dlp colours its errors; the codes have to go before the text is shown.
 ANSI_CODES = re.compile(r"\x1b\[[0-9;]*m")
+# Keeps results across restarts
+JOB_RECORD_NAME = "job.json"
+JOB_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
+RESULT_PATH_KEYS = ("vocals", "instrumental", "vocals_mp3", "instrumental_mp3")
+FRONTEND_URL = os.getenv("VOCALIFT_FRONTEND_URL", "http://127.0.0.1:5173")
 
 for directory in (UPLOAD_DIR, RESULT_DIR, MODEL_DIR):
     directory.mkdir(parents=True, exist_ok=True)
@@ -196,6 +201,39 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
 def _stem_key(stem: str, audio_format: str) -> str:
     """Where a rendered stem is kept on the job record."""
     return stem if audio_format == "wav" else f"{stem}_mp3"
+
+
+def _save_job_record(job_id: str, result_root: Path) -> None:
+    """Persist finished job beside stems."""
+    with jobs_lock:
+        record = dict(jobs.get(job_id) or {})
+    for key in RESULT_PATH_KEYS:
+        if record.get(key):
+            record[key] = Path(record[key]).relative_to(result_root).as_posix()
+    try:
+        (result_root / JOB_RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        logger.warning("Could not save the record of job %s.", job_id, exc_info=True)
+
+
+def _find_job(job_id: str) -> dict[str, Any] | None:
+    """Job copy from memory or disk."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job is not None:
+            return job.copy()
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        return None
+    result_root = RESULT_DIR / job_id
+    try:
+        record = json.loads((result_root / JOB_RECORD_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    for key in RESULT_PATH_KEYS:
+        if record.get(key):
+            record[key] = result_root / record[key]
+    with jobs_lock:
+        return jobs.setdefault(job_id, record).copy()
 
 
 def _file_size(path: Any) -> int | None:
@@ -1505,6 +1543,7 @@ def _run_separation(
             quality_mode=quality_mode,
             separation_label=separation_label,
         )
+        _save_job_record(job_id, result_root)
     except Exception as exc:
         logger.exception("Audio separation failed for job %s.", job_id)
         message = str(exc).strip()
@@ -1654,13 +1693,23 @@ def create_youtube_job(request: MediaUrlRequest) -> dict[str, Any]:
     return create_media_job(request)
 
 
+@app.get("/", include_in_schema=False)
+def index() -> RedirectResponse:
+    """Send API root to UI."""
+    return RedirectResponse(FRONTEND_URL)
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str) -> dict[str, Any]:
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if job is None:
-            raise HTTPException(404, "Job tidak ditemukan atau sudah kedaluwarsa.")
-        return _public_job(job.copy())
+    job = _find_job(job_id)
+    if job is None:
+        if JOB_ID_PATTERN.fullmatch(job_id) and (RESULT_DIR / job_id).is_dir():
+            raise HTTPException(
+                404,
+                "Proses terhenti karena server backend dimulai ulang. Pisahkan ulang lagunya.",
+            )
+        raise HTTPException(404, "Job tidak ditemukan atau sudah kedaluwarsa.")
+    return _public_job(job)
 
 
 @app.get("/api/jobs/{job_id}/files/{stem}")
@@ -1674,12 +1723,11 @@ def get_result(
     if audio_format not in {"mp3", "wav"}:
         raise HTTPException(422, "Format hasil harus mp3 atau wav.")
 
-    with jobs_lock:
-        job = jobs.get(job_id)
-        if job is None or job["status"] != "completed":
-            raise HTTPException(404, "Hasil belum tersedia.")
-        path = job.get(_stem_key(stem, audio_format))
-        original_name = job["filename"]
+    job = _find_job(job_id)
+    if job is None or job["status"] != "completed":
+        raise HTTPException(404, "Hasil belum tersedia.")
+    path = job.get(_stem_key(stem, audio_format))
+    original_name = job["filename"]
 
     if not path or not Path(path).exists():
         raise HTTPException(404, "Hasil belum tersedia.")

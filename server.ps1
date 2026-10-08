@@ -107,6 +107,7 @@ if ($Service) {
     if ($Service -eq 'Backend') {
       $backendArgs = @('-m','uvicorn','app.main:app','--host',$BindAddress,'--port',"$Port",'--log-level',$LogLevel)
       if ($Dev) { $backendArgs += @('--reload','--reload-dir',(Join-Path $root 'app')) }
+      $env:VOCALIFT_FRONTEND_URL = "http://127.0.0.1:$FrontendPort"
       Write-Host "Backend: http://$BindAddress`:$Port (Ctrl+C untuk berhenti)"
       Invoke-Checked $python $backendArgs
     } else {
